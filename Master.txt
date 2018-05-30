@@ -1,0 +1,183 @@
+#include <SimpleTimer.h>
+#include "YunClient.h"
+#include "ThingSpeak.h"
+
+//Libraries for Sensors
+#include <DHT.h>;
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include <Stepper.h>
+
+//One wire bus
+#define ONE_WIRE_BUS 3 // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);// Pass our oneWire reference to Dallas Temperature.
+//Stepper
+#define steps_revolution 32 // No of steps in one complete revolution
+
+//Pins
+#define dhtpin 1   //Digital pin DHT
+#define humisensor 2 //Digital pin to activate relay channel connected to Y69 VCC
+#define humidatapin A0 //Analogue port to read data of Y69
+DHT dhtsensor(dhtpin, DHT22); //// Initialize DHT sensor for normal 16mhz Arduino 
+Stepper thestepper(steps_revolution, 4, 5, 6, 7); //Setting up pins for stepper , 4 pins setup,connected to respective pin 1,2,3,4 of stepper board for proper sequence
+#define trigPin 8 //Ultrasound sensor
+#define echoPin 9
+
+//Variables sensors
+float airHumi;
+float airTemp;
+int rawGrowHumi;
+int growHumi;
+float growTemp;
+
+int Adistance;
+int averageDistance[5];
+
+
+//Timers
+SimpleTimer timer2;
+
+
+//Other Variables
+int steps;// No of steps for stepper
+unsigned long myChannelNumber = 80573; //ThingSpeak stuffs
+const char * myWriteAPIKey = "MRYBN6XO5YCFF5S6";
+//int statuscode;                                 //Statuscode for error checking
+YunClient client;
+
+
+
+void setup() {
+Serial.begin(9600);   //For serial print debug 
+dhtsensor.begin();          //DHT begin
+Bridge.begin();
+ThingSpeak.begin(client);
+pinMode(humidatapin, INPUT); //set up analog pin 0 to be input soilhumidity
+pinMode(trigPin, OUTPUT);
+pinMode(echoPin, INPUT);
+//timer2.setInterval(7200000, readDHT); //every 2hrs
+//timer2.setInterval(10800000, readGrowtemp);//Every 3hrs
+//timer2.setInterval(10800000, readGrowhumidity); //Every 3hrs
+//timer2.setInterval(25200000, startSteppereUltrasound); //Every 7hrs
+//timerLux.setInterval(5900000, readLux); //Every 1.5hrs
+}
+
+void loop() {
+readDHT(); 
+readGrowhumidity();
+readGrowtemp();
+}
+
+void readDHT(){
+     //DHT part
+    airHumi = dhtsensor.readHumidity();
+    airTemp= dhtsensor.readTemperature();
+    //For debugging Serial monitor
+    Serial.print("Humidity: ");
+    Serial.print(airHumi);
+    Serial.print(" %, Temp: ");
+    Serial.print(airTemp);
+    Serial.println(" Celsius");
+    delay(2000); //Delay 2 sec need to correct to elapse millis
+}
+
+void readGrowhumidity(){
+  digitalWrite(humisensor,HIGH); //Power sensor VCC via relay
+  rawGrowHumi = analogRead(A0); //Gathering raw values from sensor
+  growHumi = rawGrowHumi/10 - 100; //Converting value to percentage humidity
+  //Debugging
+  Serial.println("Humidity of Growing medium is ");
+  Serial.println(growHumi);
+  delay(2000);    
+}
+
+void readGrowtemp(){
+  // call sensors.requestTemperatures() to issue a global temperature 
+  // request to all devices on the bus
+ // Serial.print("Requesting temperatures...");
+  sensors.requestTemperatures(); // Send the command to get temperatures
+  Serial.println("DONE");
+  Serial.print("Temperature for Device 1 is: ");
+  Serial.print(sensors.getTempCByIndex(0)); // Why "byIndex"? You can have more than one IC on the same bus. 0 refers to the first IC on the wire
+  growTemp = sensors.getTempCByIndex(0);
+  timer2.setInterval(15000, sendreadGrowtemp);    //Timer set 15s in case of error
+  sendreadGrowtemp();
+}
+
+void sendreadGrowtemp(){
+  int status=ThingSpeak.writeField(myChannelNumber, 5, growTemp, myWriteAPIKey);
+  if(status != 200){
+    timer2.run(); //try to resend after n second
+  }
+}
+
+
+
+
+
+void startSteppereUltrasound(){
+  steps=-4448;  //total steps for one end of rail to another is 22240
+  thestepper.setSpeed(700);  // 700 a good max speed??
+  thestepper.step(steps);
+  averageDistance[0]= averageHeight();
+  thestepper.step(steps);
+  averageDistance[1]= averageHeight();
+  thestepper.step(steps);
+  averageDistance[2]= averageHeight();
+  thestepper.step(steps);
+  averageDistance[3]= averageHeight();
+  thestepper.step(steps);
+  averageDistance[4]= averageHeight();
+  //Revese anticlockwise going back
+  thestepper.setSpeed(700);   
+  thestepper.step(22240);
+}
+
+int readHeight(){
+     int duration, distance;
+     digitalWrite(trigPin, LOW);  // Added this line
+     //unsigned long currenttime;
+     unsigned long previoustime=micros();
+     while(1){                                    //looping until code is executed
+        if(micros()- previoustime >= 2){
+          previoustime=micros();
+          digitalWrite(trigPin, HIGH);
+          break;
+      }
+    }
+     while(1){
+       if(micros()- previoustime >= 9){
+          digitalWrite(trigPin, LOW);
+          duration = pulseIn(echoPin, HIGH);
+          distance = duration / 58.2;
+          break;
+       }
+     }     
+  return distance; 
+}
+
+long averageHeight(){
+  int Rdistance[5];
+  Adistance=0;            //reintialising variable
+  for(int i=0;i<5;i++){
+    long previousMillis=millis();
+    while(1){
+      if(millis()-previousMillis >= 700 ){
+        Rdistance[i]=readHeight();
+        break;
+      }
+    }
+  }
+   for(int i=0;i<5;i++){           //Averaging values
+      Serial.print(Rdistance[i]);
+      Serial.print(" cm ");
+       Adistance+=Rdistance[i];
+   }
+  Adistance/=5;
+  Serial.print(Adistance);
+  Serial.println(" average cm");
+  return Adistance;
+}
+
+
